@@ -1,0 +1,23 @@
+name: Yanbi
+options:
+  bundleIdPrefix: vn.phananhkhoi
+settings:
+  base:
+    IPHONEOS_DEPLOYMENT_TARGET: '16.0'
+    SWIFT_VERSION: '5.0'
+    TARGETED_DEVICE_FAMILY: '1'
+    CODE_SIGNING_ALLOWED: 'NO'
+targets:
+  Yanbi:
+    type: application
+    platform: iOS
+    sources:
+      - path: ios/Yanbi
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: vn.phananhkhoi.yanbi
+        INFOPLIST_KEY_CFBundleDisplayName: Yanbi
+        INFOPLIST_KEY_UILaunchScreen_Generation: 'YES'
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: 'YES'
+        LIBRARY_SEARCH_PATHS: '$(PROJECT_DIR)/rust/target/aarch64-apple-ios/release'
+        OTHER_LDFLAGS: '$(inherited) -lyanbi_core -lresolv'
