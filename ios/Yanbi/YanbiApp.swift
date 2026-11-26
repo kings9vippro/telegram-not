@@ -13,6 +13,9 @@ struct Roll: Decodable {
     let ket_qua: String
     let xuc_xac: [Int]
 }
+struct RollHistory: Decodable {
+    let history: [Roll]
+}
 struct Replay: Decodable, Identifiable {
     let phien: String
     let du_doan: String
@@ -86,7 +89,8 @@ struct SavedPick: Codable, Identifiable {
             }.value
             guard let output else { throw URLError(.cannotDecodeContentData) }
             let updated = try JSONDecoder().decode(Analysis.self, from: output)
-            let results = Dictionary(updated.recent.map { ($0.phien, $0.ket_qua) }, uniquingKeysWith: { first, _ in first })
+            let history = try JSONDecoder().decode(RollHistory.self, from: data)
+            let results = Dictionary(history.history.map { ($0.phien, $0.ket_qua) }, uniquingKeysWith: { first, _ in first })
             for index in picks.indices {
                 if let actual = results[picks[index].phien] { picks[index].ket_qua = actual }
             }
