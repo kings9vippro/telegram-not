@@ -16,6 +16,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-apple-ios
+      - name: Test Rust analysis
+        run: cargo test --manifest-path rust/Cargo.toml
       - name: Build Rust for iOS
         run: cargo build --manifest-path rust/Cargo.toml --release --target aarch64-apple-ios
       - name: Restore app background
