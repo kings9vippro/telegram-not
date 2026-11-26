@@ -76,6 +76,24 @@ struct SavedPick: Codable, Identifiable {
             picks = saved
         }
     }
+    private func bundledHistory() throws -> Data {
+        guard let url = Bundle.main.url(forResource: "snapshot", withExtension: "txt") else {
+            throw URLError(.fileDoesNotExist)
+        }
+        let text = try String(contentsOf: url, encoding: .utf8)
+        let labels = ["T": "Tài", "X": "Xỉu", "B": "Bão"]
+        let rolls = text.split(whereSeparator: \.isWhitespace).compactMap { token -> Roll? in
+            let components = token.split(separator: ":")
+            guard components.count == 2, components[1].count == 4,
+                  Int(components[0]) != nil else { return nil }
+            let symbols = Array(components[1])
+            let dice = symbols.prefix(3).compactMap { $0.wholeNumberValue }
+            guard dice.count == 3, let result = labels[String(symbols[3])] else { return nil }
+            return Roll(phien: String(components[0]), ket_qua: result, xuc_xac: dice)
+        }
+        guard rolls.count > 100 else { throw URLError(.cannotDecodeContentData) }
+        return try JSONEncoder().encode(RollHistory(history: rolls))
+    }
     func refresh() async {
         guard !isLoading else { return }
         isLoading = true
@@ -106,7 +124,7 @@ struct SavedPick: Codable, Identifiable {
                 try? data.write(to: cacheURL, options: .atomic)
             } catch {
                 live = false
-                data = try Data(contentsOf: cacheURL)
+                data = (try? Data(contentsOf: cacheURL)) ?? (try bundledHistory())
             }
             let output = await Task.detached(priority: .userInitiated) { () -> Data? in
                 var terminated = [CChar](repeating: 0, count: data.count + 1)
@@ -133,7 +151,8 @@ struct SavedPick: Codable, Identifiable {
             UserDefaults.standard.set(try JSONEncoder().encode(picks), forKey: "yanbi.picks")
             result = updated
             sourceLive = live
-            message = live ? "Đã đồng bộ API gốc · \(Date.now.formatted(date: .omitted, time: .shortened))" : "Mất kết nối nguồn · chỉ xem lịch sử đã lưu"
+            message = live ? "Đã đồng bộ API gốc · \(Date.now.formatted(date: .omitted, time: .shortened))" :
+                "API gốc mất kết nối · thống kê từ dữ liệu lưu ngày 26/11/2026"
         } catch {
             sourceLive = false
             message = "API gốc đang gián đoạn · kéo xuống để thử lại"
@@ -235,7 +254,24 @@ private struct PhotoBackground: View {
                                 .font(.subheadline)
                                 Divider().overlay(.black.opacity(0.1))
                             }
-                            if forecast.picks.isEmpty { Text("Chưa lưu phiên nào trên máy này").font(.subheadline) }
+                            if forecast.picks.isEmpty { Text("Chưa có dự đoán trực tiếp trên máy này").font(.subheadline) }
+                        }
+                        if let replay = forecast.result?.replay, !replay.isEmpty {
+                            panel {
+                                Text("KIỂM THỬ LỊCH SỬ").font(.caption.weight(.bold)).tracking(1)
+                                Text("Mô phỏng theo thứ tự phiên, tách khỏi thắng thua trực tiếp")
+                                    .font(.caption)
+                                ForEach(replay.reversed().prefix(8)) { item in
+                                    HStack {
+                                        Text("#\(item.phien)").monospacedDigit()
+                                        Spacer()
+                                        Text(item.du_doan + " → " + item.ket_qua)
+                                        Text(item.status)
+                                            .foregroundStyle(item.status == "Thắng" ? Color(red: 0.09, green: 0.44, blue: 0.32) : Color(red: 0.66, green: 0.20, blue: 0.30))
+                                    }
+                                    .font(.caption)
+                                }
+                            }
                         }
                         panel {
                             Text("NHỊP CẦU GẦN ĐÂY").font(.caption.weight(.bold)).tracking(1)
