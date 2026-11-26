@@ -8,12 +8,12 @@ import UIKit
 
 private let endpoint = URL(string: "https://asbestos-promote-mississippi-wizard.trycloudflare.com/sunhot/api/tx/history")!
 
-struct Roll: Decodable {
+struct Roll: Codable {
     let phien: String
     let ket_qua: String
     let xuc_xac: [Int]
 }
-struct RollHistory: Decodable {
+struct RollHistory: Codable {
     let history: [Roll]
 }
 struct Replay: Decodable, Identifiable {
@@ -22,6 +22,12 @@ struct Replay: Decodable, Identifiable {
     let ket_qua: String
     let status: String
     var id: String { phien }
+}
+struct PatternStat: Decodable, Identifiable {
+    let name: String
+    let tai: Int
+    let xiu: Int
+    var id: String { name }
 }
 struct Analysis: Decodable {
     let total: Int
@@ -41,6 +47,7 @@ struct Analysis: Decodable {
     let baseline_accuracy: Double
     let recent: [Roll]
     let replay: [Replay]
+    let patterns: [PatternStat]
 }
 struct SavedPick: Codable, Identifiable {
     let phien: String
@@ -59,6 +66,9 @@ struct SavedPick: Codable, Identifiable {
     @Published var picks: [SavedPick] = []
     @Published var message = "Đang tải lịch sử..."
     @Published var isLoading = false
+    @Published var sourceLive = false
+    private let cacheURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("yanbi-history.json")
 
     init() {
         if let data = UserDefaults.standard.data(forKey: "yanbi.picks"),
@@ -71,11 +81,33 @@ struct SavedPick: Codable, Identifiable {
         isLoading = true
         defer { isLoading = false }
         do {
-            var request = URLRequest(url: endpoint)
-            request.timeoutInterval = 15
-            request.cachePolicy = .reloadIgnoringLocalCacheData
-            let (data, response) = try await URLSession.shared.data(for: request)
-            guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+            var live = true
+            let data: Data
+            do {
+                var request = URLRequest(url: endpoint)
+                request.timeoutInterval = 12
+                request.cachePolicy = .reloadIgnoringLocalCacheData
+                let (historyData, response) = try await URLSession.shared.data(for: request)
+                guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
+                var history = try JSONDecoder().decode(RollHistory.self, from: historyData)
+                // Phiên hiện tại lấy trực tiếp từ API gốc, lịch sử dùng để học mẫu cầu.
+                var latestRequest = URLRequest(url: endpoint.deletingLastPathComponent())
+                latestRequest.timeoutInterval = 5
+                latestRequest.cachePolicy = .reloadIgnoringLocalCacheData
+                if let (latestData, latestResponse) = try? await URLSession.shared.data(for: latestRequest),
+                   (latestResponse as? HTTPURLResponse)?.statusCode == 200,
+                   let latest = try? JSONDecoder().decode(Roll.self, from: latestData),
+                   let latestID = Int(latest.phien),
+                   latestID > (history.history.compactMap { Int($0.phien) }.max() ?? 0) {
+                    history.history.append(latest)
+                }
+                data = try JSONEncoder().encode(history)
+                try FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try data.write(to: cacheURL, options: .atomic)
+            } catch {
+                live = false
+                data = try Data(contentsOf: cacheURL)
+            }
             let output = await Task.detached(priority: .userInitiated) { () -> Data? in
                 var terminated = [CChar](repeating: 0, count: data.count + 1)
                 data.withUnsafeBytes { bytes in
@@ -94,15 +126,17 @@ struct SavedPick: Codable, Identifiable {
             for index in picks.indices {
                 if let actual = results[picks[index].phien] { picks[index].ket_qua = actual }
             }
-            if ["Tài", "Xỉu"].contains(updated.prediction) && !picks.contains(where: { $0.phien == updated.next }) {
+            if live && ["Tài", "Xỉu"].contains(updated.prediction) && !picks.contains(where: { $0.phien == updated.next }) {
                 picks.append(SavedPick(phien: updated.next, du_doan: updated.prediction))
             }
             picks = Array(picks.suffix(100))
             UserDefaults.standard.set(try JSONEncoder().encode(picks), forKey: "yanbi.picks")
             result = updated
-            message = "Cập nhật \(Date.now.formatted(date: .omitted, time: .shortened))"
+            sourceLive = live
+            message = live ? "Đã đồng bộ API gốc · \(Date.now.formatted(date: .omitted, time: .shortened))" : "Mất kết nối nguồn · chỉ xem lịch sử đã lưu"
         } catch {
-            message = "Không tải được dữ liệu · kéo xuống để thử lại"
+            sourceLive = false
+            message = "API gốc đang gián đoạn · kéo xuống để thử lại"
         }
     }
 }
@@ -112,13 +146,19 @@ private struct PhotoBackground: View {
         GeometryReader { proxy in
             if let path = Bundle.main.path(forResource: "background", ofType: "jpg"),
                let photo = UIImage(contentsOfFile: path) {
-                Image(uiImage: photo)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    .clipped()
+                ZStack {
+                    Image(uiImage: photo)
+                        .resizable().scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .blur(radius: 18)
+                    Image(uiImage: photo)
+                        .resizable().scaledToFit()
+                        .frame(width: proxy.size.width, height: proxy.size.height, alignment: .center)
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
             } else {
-                Color(white: 0.2)
+                Color(red: 0.88, green: 0.85, blue: 0.84)
             }
         }
         .ignoresSafeArea()
@@ -129,13 +169,12 @@ private struct PhotoBackground: View {
 @main struct YanbiApp: App {
     @StateObject private var forecast = Forecast()
     @Environment(\.scenePhase) private var scenePhase
-    private let ink = Color.white
+    private let ink = Color(red: 0.13, green: 0.13, blue: 0.16)
 
     var body: some Scene {
         WindowGroup {
             ZStack {
                 PhotoBackground()
-                Color.black.opacity(0.27).ignoresSafeArea()
                 ScrollView {
                     VStack(alignment: .leading, spacing: 15) {
                         HStack {
@@ -148,19 +187,21 @@ private struct PhotoBackground: View {
                                 Image(systemName: "arrow.clockwise")
                                     .font(.headline.weight(.bold))
                                     .frame(width: 46, height: 46)
-                                    .background(.ultraThinMaterial, in: Circle())
+                                    .background(.white.opacity(0.76), in: Circle())
                             }
                             .disabled(forecast.isLoading)
                             .accessibilityLabel("Cập nhật")
                         }
+                        .padding(14)
+                        .background(.white.opacity(0.75), in: RoundedRectangle(cornerRadius: 22))
                         .padding(.top, 10)
                         panel {
                             Text("DỰ ĐOÁN · PHIÊN \(forecast.result?.next ?? "—")")
                                 .font(.caption.weight(.bold)).tracking(1.5)
-                            Text(forecast.result?.prediction ?? "Đang tải")
+                            Text(forecast.sourceLive ? (forecast.result?.prediction ?? "Đang tải") : "Chờ nguồn")
                                 .font(.system(size: 48, weight: .heavy, design: .rounded))
                                 .contentTransition(.numericText())
-                            Text(forecast.result.map { "\($0.pattern) · ước lượng \($0.confidence)%" } ?? "Đang kết nối")
+                            Text(forecast.sourceLive ? (forecast.result.map { "\($0.pattern) · nghiêng \($0.confidence)%" } ?? "Đang kết nối") : "Nguồn dữ liệu tạm gián đoạn")
                                 .font(.subheadline)
                             Text("Tỷ lệ mô hình trong kiểm thử: \(forecast.result?.model_accuracy ?? 0, specifier: "%.1f")%")
                                 .font(.caption)
@@ -175,9 +216,9 @@ private struct PhotoBackground: View {
                             let wins = forecast.picks.filter { $0.status == "Thắng" }.count
                             let losses = forecast.picks.filter { $0.status == "Thua" }.count
                             HStack {
-                                Text("\(wins) thắng").foregroundStyle(.green)
+                                Text("\(wins) thắng").foregroundStyle(Color(red: 0.09, green: 0.44, blue: 0.32))
                                 Text("·")
-                                Text("\(losses) thua").foregroundStyle(.pink)
+                                Text("\(losses) thua").foregroundStyle(Color(red: 0.66, green: 0.20, blue: 0.30))
                                 Spacer()
                                 Text(wins + losses > 0 ? String(format: "%.1f%%", Double(wins) * 100 / Double(wins + losses)) : "—")
                             }
@@ -189,10 +230,10 @@ private struct PhotoBackground: View {
                                     Text(pick.du_doan)
                                     Text(pick.status)
                                         .fontWeight(.semibold)
-                                        .foregroundStyle(pick.status == "Thắng" ? .green : pick.status == "Thua" ? .pink : .white)
+                                        .foregroundStyle(pick.status == "Thắng" ? Color(red: 0.09, green: 0.44, blue: 0.32) : pick.status == "Thua" ? Color(red: 0.66, green: 0.20, blue: 0.30) : ink)
                                 }
                                 .font(.subheadline)
-                                Divider().overlay(.white.opacity(0.2))
+                                Divider().overlay(.black.opacity(0.1))
                             }
                             if forecast.picks.isEmpty { Text("Chưa lưu phiên nào trên máy này").font(.subheadline) }
                         }
@@ -201,6 +242,17 @@ private struct PhotoBackground: View {
                             Text("Bệt \(forecast.result?.streak_side ?? "—") · \(forecast.result?.streak ?? 0) phiên")
                             Text("Kiểm thử \(forecast.result?.tested ?? 0) phiên · mốc \(forecast.result?.baseline_accuracy ?? 0, specifier: "%.1f")%")
                                 .font(.caption)
+                            if let patterns = forecast.result?.patterns {
+                                ForEach(patterns.prefix(5)) { pattern in
+                                    HStack {
+                                        Text(pattern.name).lineLimit(1)
+                                        Spacer(minLength: 12)
+                                        Text("T \(pattern.tai) · X \(pattern.xiu)")
+                                            .monospacedDigit()
+                                    }
+                                    .font(.subheadline)
+                                }
+                            }
                             if let rolls = forecast.result?.recent.suffix(20) {
                                 Text(rolls.map { $0.ket_qua == "Tài" ? "T" : $0.ket_qua == "Xỉu" ? "X" : "B" }.joined(separator: "  "))
                                     .font(.system(.subheadline, design: .monospaced)).lineLimit(3)
@@ -219,7 +271,7 @@ private struct PhotoBackground: View {
                 }
                 .refreshable { await forecast.refresh() }
             }
-            .preferredColorScheme(.dark)
+            .preferredColorScheme(.light)
             .task {
                 await forecast.refresh()
                 while !Task.isCancelled {
@@ -240,14 +292,14 @@ private struct PhotoBackground: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 19))
+        .background(.white.opacity(0.78), in: RoundedRectangle(cornerRadius: 19))
     }
     private func panel<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
         VStack(alignment: .leading, spacing: 11, content: content)
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(18)
-            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 23))
-            .overlay(RoundedRectangle(cornerRadius: 23).strokeBorder(.white.opacity(0.25), lineWidth: 1))
-            .shadow(color: .black.opacity(0.18), radius: 12, y: 7)
+            .background(.white.opacity(0.78), in: RoundedRectangle(cornerRadius: 23))
+            .overlay(RoundedRectangle(cornerRadius: 23).strokeBorder(.white.opacity(0.7), lineWidth: 1))
+            .shadow(color: .black.opacity(0.12), radius: 12, y: 7)
     }
 }
