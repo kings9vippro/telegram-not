@@ -6,6 +6,7 @@ on:
       - 'rust/**'
       - 'ios/**'
       - 'project.yml'
+      - 'background.jpg.base64'
       - '.github/workflows/ios.yml'
 jobs:
   build:
@@ -17,6 +18,8 @@ jobs:
           targets: aarch64-apple-ios
       - name: Build Rust for iOS
         run: cargo build --manifest-path rust/Cargo.toml --release --target aarch64-apple-ios
+      - name: Restore app background
+        run: base64 --decode background.jpg.base64 > ios/Yanbi/background.jpg
       - name: Generate Xcode project
         run: brew install xcodegen && xcodegen generate
       - name: Build iPhone app
