@@ -11,6 +11,11 @@ targets:
   Yanbi:
     type: application
     platform: iOS
+    info:
+      path: ios/Yanbi/Info.plist
+      properties:
+        CFBundleDisplayName: Yanbi
+        UILaunchScreen: {}
     sources:
       - path: ios/Yanbi
     settings:
