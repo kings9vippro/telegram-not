@@ -82,7 +82,7 @@ struct SavedPick: Codable, Identifiable {
         defer { isLoading = false }
         do {
             var live = true
-            let data: Data
+            var data: Data
             do {
                 var request = URLRequest(url: endpoint)
                 request.timeoutInterval = 12
@@ -102,8 +102,8 @@ struct SavedPick: Codable, Identifiable {
                     history.history.append(latest)
                 }
                 data = try JSONEncoder().encode(history)
-                try FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try data.write(to: cacheURL, options: .atomic)
+                try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try? data.write(to: cacheURL, options: .atomic)
             } catch {
                 live = false
                 data = try Data(contentsOf: cacheURL)
