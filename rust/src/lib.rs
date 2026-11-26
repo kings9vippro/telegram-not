@@ -12,13 +12,15 @@ struct Recent { phien: String, ket_qua: String, xuc_xac: [u8; 3] }
 #[derive(Serialize)]
 struct Replay { phien: String, du_doan: String, ket_qua: String, status: String }
 #[derive(Serialize)]
+struct PatternStat { name: String, tai: usize, xiu: usize }
+#[derive(Serialize)]
 struct Output {
     total: usize, tai: usize, xiu: usize, bao: usize,
     faces: [usize; 6], sums: [usize; 19],
     streak: usize, streak_side: String, next: String,
     prediction: String, confidence: usize, pattern: String,
     tested: usize, model_accuracy: f64, baseline_accuracy: f64,
-    recent: Vec<Recent>, replay: Vec<Replay>,
+    recent: Vec<Recent>, replay: Vec<Replay>, patterns: Vec<PatternStat>,
 }
 fn valid_side(roll: &Roll) -> Option<char> {
     if roll.xuc_xac.iter().any(|x| !(1..=6).contains(x)) { return None; }
@@ -42,9 +44,20 @@ fn context_keys(tail: &str, prev: &Roll) -> Vec<String> {
     if tail.len() >= 4 && tail.chars().rev().take(4).enumerate().all(|(i, c)| c == if i % 2 == 0 { last } else { opposite(last) }) {
         keys.push("Cầu 1–1".into());
     }
-    for (name, chunk) in [("Cầu 1–2", format!("{}{}{}", last, opposite(last), opposite(last))),
-        ("Cầu 2–1", format!("{}{}{}", last, last, opposite(last)))] {
-        if tail.len() >= 6 && tail.ends_with(&(chunk.clone() + &chunk)) { keys.push(name.into()); }
+    for period in [3, 4, 6] {
+        if tail.len() < period * 2 { continue; }
+        let chunk = &tail[tail.len() - period..];
+        if &tail[tail.len() - 2 * period..tail.len() - period] != chunk { continue; }
+        let pattern = if period == 3 && chunk.as_bytes()[0] != chunk.as_bytes()[1] && chunk.as_bytes()[1] == chunk.as_bytes()[2] {
+            "Cầu 1–2"
+        } else if period == 3 && chunk.as_bytes()[0] == chunk.as_bytes()[1] && chunk.as_bytes()[1] != chunk.as_bytes()[2] {
+            "Cầu 2–1"
+        } else if period == 4 && chunk.as_bytes()[0] == chunk.as_bytes()[1] && chunk.as_bytes()[2] == chunk.as_bytes()[3] && chunk.as_bytes()[1] != chunk.as_bytes()[2] {
+            "Cầu 2–2"
+        } else if period == 6 && chunk[..3].bytes().all(|c| c == chunk.as_bytes()[0]) && chunk[3..].bytes().all(|c| c == chunk.as_bytes()[3]) && chunk.as_bytes()[0] != chunk.as_bytes()[3] {
+            "Cầu 3–3"
+        } else { continue };
+        keys.push(pattern.into());
     }
     let sum: u8 = prev.xuc_xac.iter().sum();
     keys.push(format!("Tổng {sum}"));
@@ -80,7 +93,7 @@ fn analyze(input: &str) -> Result<Output, String> {
     let mut out = Output { total: 0, tai: 0, xiu: 0, bao: 0, faces: [0; 6], sums: [0; 19],
         streak: 0, streak_side: String::new(), next: String::new(), prediction: "Đang chờ".into(),
         confidence: 0, pattern: String::new(), tested: 0, model_accuracy: 0.0,
-        baseline_accuracy: 0.0, recent: vec![], replay: vec![] };
+        baseline_accuracy: 0.0, recent: vec![], replay: vec![], patterns: vec![] };
     let mut tail = String::new();
     let mut counts: HashMap<String, (usize, usize)> = HashMap::new();
     let mut model_wins = 0;
@@ -141,6 +154,13 @@ fn analyze(input: &str) -> Result<Output, String> {
             out.confidence = (100.0 * prob.max(1.0 - prob)).round() as usize;
             out.pattern = name;
         }
+        let keys = context_keys(&tail, previous);
+        out.patterns = keys.into_iter().filter_map(|name| {
+            let &(n, t) = counts.get(&name)?;
+            (n >= 8).then_some(PatternStat { name, tai: t, xiu: n - t })
+        }).collect();
+        out.patterns.sort_by(|a, b| (b.tai + b.xiu).cmp(&(a.tai + a.xiu)));
+        out.patterns.truncate(8);
     }
     Ok(out)
 }
@@ -157,4 +177,38 @@ pub extern "C" fn yanbi_analyze(ptr: *const c_char) -> *mut c_char {
 #[no_mangle]
 pub extern "C" fn yanbi_free(ptr: *mut c_char) {
     if !ptr.is_null() { unsafe { drop(CString::from_raw(ptr)); } }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_roll_and_respects_storms() {
+        let payload = serde_json::json!({"history":[
+            {"phien":"1","xuc_xac":[3,3,3],"ket_qua":"Bão"},
+            {"phien":"2","xuc_xac":[6,4,1],"ket_qua":"Tài"},
+            {"phien":"3","xuc_xac":[2,2,2],"ket_qua":"Xỉu"},
+            {"phien":"4","xuc_xac":[1,1,2],"ket_qua":"Xỉu"}
+        ]});
+        let output = analyze(&payload.to_string()).unwrap();
+        assert_eq!((output.total, output.bao, output.tai, output.xiu), (3, 1, 1, 1));
+        assert_eq!(output.next, "5");
+        assert_eq!(output.streak, 1);
+    }
+
+    #[test]
+    fn detects_repeated_patterns_without_future_results() {
+        let outcomes: Vec<_> = (0..300).map(|i| {
+            let tai = i % 2 == 0;
+            serde_json::json!({"phien":(i+1).to_string(),
+                "xuc_xac": if tai { [6,4,1] } else { [1,2,3] },
+                "ket_qua": if tai { "Tài" } else { "Xỉu" }})
+        }).collect();
+        let output = analyze(&serde_json::json!({"history":outcomes}).to_string()).unwrap();
+        assert_eq!(output.total, 300);
+        assert!(output.tested >= 100);
+        assert!(output.patterns.iter().any(|p| p.name == "Cầu 1–1"));
+        assert_eq!(output.replay.len(), 30);
+    }
 }
