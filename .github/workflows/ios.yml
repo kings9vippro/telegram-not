@@ -19,7 +19,7 @@ jobs:
       - name: Build Rust for iOS
         run: cargo build --manifest-path rust/Cargo.toml --release --target aarch64-apple-ios
       - name: Restore app background
-        run: base64 --decode background.jpg.base64 > ios/Yanbi/background.jpg
+        run: base64 -D -i background.jpg.base64 -o ios/Yanbi/background.jpg
       - name: Generate Xcode project
         run: brew install xcodegen && xcodegen generate
       - name: Build iPhone app
