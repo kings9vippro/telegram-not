@@ -14,7 +14,7 @@ struct Roll: Codable {
     let xuc_xac: [Int]
 }
 struct RollHistory: Codable {
-    let history: [Roll]
+    var history: [Roll]
 }
 struct Replay: Decodable, Identifiable {
     let phien: String
