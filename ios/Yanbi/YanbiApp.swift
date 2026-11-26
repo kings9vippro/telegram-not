@@ -39,16 +39,20 @@ struct Analysis: Decodable {
             request.cachePolicy = .reloadIgnoringLocalCacheData
             let (data, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw URLError(.badServerResponse) }
-            let output = data.withUnsafeBytes { bytes -> Data? in
-                guard let pointer = bytes.baseAddress else { return nil }
+            // Chạy phần phân tích Rust ngoài main actor để giữ giao diện phản hồi tốt.
+            let output = await Task.detached(priority: .userInitiated) { () -> Data? in
                 var terminated = [CChar](repeating: 0, count: data.count + 1)
-                terminated.withUnsafeMutableBytes { destination in destination.copyBytes(from: bytes) }
+                data.withUnsafeBytes { bytes in
+                    terminated.withUnsafeMutableBytes { destination in
+                        destination.copyBytes(from: bytes)
+                    }
+                }
                 return terminated.withUnsafeBufferPointer { buffer in
                     guard let input = buffer.baseAddress, let value = rustAnalyze(input) else { return nil }
                     defer { rustFree(value) }
                     return String(cString: value).data(using: .utf8)
                 }
-            }
+            }.value
             guard let output else { throw URLError(.cannotDecodeContentData) }
             result = try JSONDecoder().decode(Analysis.self, from: output)
             message = "Đã cập nhật \(Date.now.formatted(date: .omitted, time: .shortened))"
@@ -61,6 +65,7 @@ struct Analysis: Decodable {
 @main struct YanbiApp: App {
     @AppStorage("darkMode") private var darkMode = true
     @StateObject private var forecast = Forecast()
+    @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
         WindowGroup {
             NavigationStack {
@@ -77,7 +82,7 @@ struct Analysis: Decodable {
                             Text(forecast.result?.prediction ?? "Đang tải")
                                 .font(.system(size: 48, weight: .bold, design: .rounded))
                                 .minimumScaleFactor(0.65).lineLimit(1)
-                            Text(forecast.result?.confidence == 0 ? "Chưa có tín hiệu đủ tin cậy" : "Ước lượng \(forecast.result!.confidence)% khi ra Tài/Xỉu")
+                            Text((forecast.result?.confidence ?? 0) == 0 ? "Chưa có tín hiệu đủ tin cậy" : "Ước lượng \(forecast.result?.confidence ?? 0)% khi ra Tài/Xỉu")
                                 .foregroundStyle(.secondary)
                         }
                         card {
@@ -102,9 +107,33 @@ struct Analysis: Decodable {
                     }
                     .padding()
                 }
+                .background {
+                    GeometryReader { geometry in
+                        Image("background")
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .clipped()
+                            .overlay(darkMode ? Color.black.opacity(0.55) : Color.white.opacity(0.48))
+                            .ignoresSafeArea()
+                            .accessibilityHidden(true)
+                    }
+                }
+                .scrollContentBackground(.hidden)
                 .refreshable { await forecast.refresh() }
                 .toolbar { Button("Cập nhật", systemImage: "arrow.clockwise") { Task { await forecast.refresh() } }.disabled(forecast.isLoading) }
-                .task { await forecast.refresh() }
+                .task {
+                    await forecast.refresh()
+                    // iOS cho phép lặp khi ứng dụng hiện trên màn hình.
+                    while !Task.isCancelled {
+                        try? await Task.sleep(nanoseconds: 20_000_000_000)
+                        if Task.isCancelled { break }
+                        if scenePhase == .active { await forecast.refresh() }
+                    }
+                }
+                .onChange(of: scenePhase) { phase in
+                    if phase == .active { Task { await forecast.refresh() } }
+                }
                 .navigationBarTitleDisplayMode(.inline)
             }
             .preferredColorScheme(darkMode ? .dark : .light)
