@@ -124,7 +124,11 @@ struct SavedPick: Codable, Identifiable {
                 try? data.write(to: cacheURL, options: .atomic)
             } catch {
                 live = false
-                data = (try? Data(contentsOf: cacheURL)) ?? (try bundledHistory())
+                if let saved = try? Data(contentsOf: cacheURL) {
+                    data = saved
+                } else {
+                    data = try bundledHistory()
+                }
             }
             let output = await Task.detached(priority: .userInitiated) { () -> Data? in
                 var terminated = [CChar](repeating: 0, count: data.count + 1)
